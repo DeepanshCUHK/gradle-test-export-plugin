@@ -45,6 +45,10 @@ class TestExportTask extends Exec {
 
     @Input
     @Optional
+    def enrichment
+
+    @Input
+    @Optional
     def type = "testcase"
 
     @Input
@@ -128,6 +132,18 @@ class TestExportTask extends Exec {
             }
         }
 
+        def featureJSONFile = getEnrichment().featureJsonParser('getFeatureJsonFile')
+        def featureJSON = getEnrichment().featureJsonParser('getFeatureJsonParseText')
+        def timestampFeature = LocalDateTime.parse(InputJSONFile.timestamp)
+        String indexFeature = "feature-" + indexPrefix + timestampFeature.format(DateTimeFormatter.ofPattern(indexTimestampPattern))
+        String typeFinal = "feature"
+
+        for (object in featureJSON) {
+            String id = sha1Hashed(object.toString())
+            IndexRequest indexObjFeature = new IndexRequest(indexFeature, typeFinal, id)
+            processor.add(indexObjFeature.source(object, XContentType.JSON))
+        }
+
         processor.close()
     }
 
@@ -142,10 +158,11 @@ class TestExportTask extends Exec {
         files.each {
             def xmlDoc = new XmlSlurper().parse(it)
             String timestamp = xmlDoc.@timestamp
+            def testCaseJson = getEnrichment().testCaseJsonParser(it)
 
             xmlDoc.children().each {
                 if (it.name() == "testcase") {
-                    Result result = parseTestCase(it)
+                    Result result = parseTestCase(it, testCaseJson)
                     result.timestamp = timestamp
                     list << result
                 }
@@ -155,7 +172,7 @@ class TestExportTask extends Exec {
         list
     }
 
-    def parseTestCase(def p) {
+    def parseTestCase(def p, def testCaseJson) {
         String testname = p.@name
         Result result = new Result(name: testname)
         def time = Float.parseFloat(p.@time.toString()) * 1000
@@ -178,7 +195,10 @@ class TestExportTask extends Exec {
                 result.resultType = TestResult.ResultType.SKIPPED
             }
         }
+        result.feature = getEnrichment().resolveFeature(p, testCaseJson)
+        result.steps =  getEnrichment().resolveSteps(p, testCaseJson)
         result.properties = resolveProperties(p)
+        result.projectName= project.getName()
         result
     }
 
