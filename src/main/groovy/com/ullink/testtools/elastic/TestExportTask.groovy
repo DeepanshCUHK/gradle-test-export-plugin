@@ -14,7 +14,9 @@ import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.testing.Test
 import org.gradle.api.tasks.testing.TestResult
+import java.nio.file.Paths
 import java.security.MessageDigest
+import java.text.SimpleDateFormat
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
@@ -75,6 +77,7 @@ class TestExportTask extends Exec {
         if (getPort() != null) {
             properties.setProperty('port', getPort())
         }
+
         return properties
     }
 
@@ -109,9 +112,10 @@ class TestExportTask extends Exec {
             def list = parseTestFiles(files)
             list.each {
                 def output = JsonOutput.toJson(it)
-                def timetamp = LocalDateTime.parse(it.timestamp)
-                String index = indexPrefix + timetamp.format(DateTimeFormatter.ofPattern(indexTimestampPattern))
+                def timestamp = LocalDateTime.parse(it.timestamp)
+                String index = indexPrefix + timestamp.format(DateTimeFormatter.ofPattern(indexTimestampPattern))
                 index = index.replace('.', '-')
+
                 String typeFinal
                 switch (type) {
                     case GString:
@@ -126,21 +130,23 @@ class TestExportTask extends Exec {
                     default:
                         throw new IllegalArgumentException("'type' attribute of type ${type.getClass()} is not supported")
                 }
+
                 String id = sha1Hashed(it.getClassname() + it.getName() + it.timestamp)
                 IndexRequest indexObj = new IndexRequest(index, typeFinal, id)
                 processor.add(indexObj.source(output, XContentType.JSON))
             }
         }
 
-        def featureJSONFile = getEnrichment().featureJsonParser('getFeatureJsonFile')
-        def featureJSON = getEnrichment().featureJsonParser('getFeatureJsonParseText')
-        def timestampFeature = LocalDateTime.parse(InputJSONFile.timestamp)
-        String indexFeature = "feature-" + indexPrefix + timestampFeature.format(DateTimeFormatter.ofPattern(indexTimestampPattern))
+        def FeatureJSONFile = getEnrichment().featureJsonParser('getFeatureJsonFile')
+        def FeatureJSON = getEnrichment().featureJsonParser('getFeatureJsonParseText')
+
+        def indexFeature = "feature-" + indexPrefix + new SimpleDateFormat(indexTimestampPattern).format(FeatureJSONFile.lastModified())
         String typeFinal = "feature"
 
-        for (object in featureJSON) {
+        for (object in FeatureJSON) {
             String id = sha1Hashed(object.toString())
             IndexRequest indexObjFeature = new IndexRequest(indexFeature, typeFinal, id)
+            object.productName = getProperties().product.name
             processor.add(indexObjFeature.source(object, XContentType.JSON))
         }
 
@@ -149,7 +155,7 @@ class TestExportTask extends Exec {
 
     static def sha1Hashed(String value) {
         def messageDigest = MessageDigest.getInstance("SHA-1")
-        String hexString = messageDigest.digest(value.getBytes()).collect { String.format('%02x', it)}.join()
+        String hexString = messageDigest.digest(value.getBytes()).collect { String.format('%02x', it) }.join()
         return hexString
     }
 
@@ -157,22 +163,24 @@ class TestExportTask extends Exec {
         def list = []
         files.each {
             def xmlDoc = new XmlSlurper().parse(it)
+            def fileName = xmlDoc.@name
             String timestamp = xmlDoc.@timestamp
-            def testCaseJson = getEnrichment().testCaseJsonParser(it)
+            def solutions = getEnrichment().testCaseJsonParser(fileName)
+            def filePath = Paths.get("src", "test", "groovy", fileName.toString().replace(".", File.separator) + ".groovy")
 
             xmlDoc.children().each {
                 if (it.name() == "testcase") {
-                    Result result = parseTestCase(it, testCaseJson)
+                    Result result = parseTestCase(it,solutions)
                     result.timestamp = timestamp
+                    result.filePath = filePath
                     list << result
                 }
             }
         }
-
         list
     }
 
-    def parseTestCase(def p, def testCaseJson) {
+    def parseTestCase(def p, def solution) {
         String testname = p.@name
         Result result = new Result(name: testname)
         def time = Float.parseFloat(p.@time.toString()) * 1000
@@ -187,7 +195,6 @@ class TestExportTask extends Exec {
                 result.with {
                     failureMessage = node.@message
                     failureType = node.@type
-                    failureText = node.text()
                     resultType = TestResult.ResultType.FAILURE
                 }
             }
@@ -195,10 +202,11 @@ class TestExportTask extends Exec {
                 result.resultType = TestResult.ResultType.SKIPPED
             }
         }
-        result.feature = getEnrichment().resolveFeature(p, testCaseJson)
-        result.steps =  getEnrichment().resolveSteps(p, testCaseJson)
+        result.feature = getEnrichment().resolveFeature(p, solution)
+        result.steps =  getEnrichment().resolveSteps(p,solution)
         result.properties = resolveProperties(p)
         result.projectName= project.getName()
+
         result
     }
 
@@ -211,4 +219,5 @@ class TestExportTask extends Exec {
         }
         return null
     }
+
 }
